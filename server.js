@@ -1,65 +1,131 @@
-// server.js
+ // WebRTC Signaling Server
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
+const cors = require('cors');
  
 const app = express();
+app.use(cors());
+ 
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: '*' },
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST']
+  }
 });
  
-const users = {}; // Maps socket.id -> socket
+// Store connected users: Map publicKey -> socketId
+const users = new Map();
+// Store reverse mapping: socketId -> publicKey
+const socketToPublicKey = new Map();
  
 io.on('connection', (socket) => {
-  console.log('[Server] New socket connected:', socket.id);
-  users[socket.id] = socket;
- 
-  // Notify existing users about new user
-  socket.broadcast.emit('user-joined', socket.id);
- 
-  // Forward offer
-  socket.on('offer', ({ to, sdp }) => {
-    console.log(`[Server] Offer from ${socket.id} to ${to}`);
-    io.to(to).emit('offer', { from: socket.id, sdp });
+  console.log('New client connected:', socket.id);
+  // Extract public key from connection query
+  const publicKey = socket.handshake.query.publicKey;
+  if (publicKey) {
+    console.log(`User registered with public key: ${publicKey}`);
+    // Store both mappings
+    users.set(publicKey, socket.id);
+    socketToPublicKey.set(socket.id, publicKey);
+    // Inform client they are registered
+    socket.emit('registered', {
+      socketId: socket.id,
+      publicKey: publicKey
+    });
+  } else {
+    console.log('User connected without public key');
+    socket.disconnect();
+    return;
+  }
+  // Handle call offer
+  socket.on('offer', (data) => {
+    const { to, sdp } = data;
+    const from = socketToPublicKey.get(socket.id);
+    console.log(`Offer from ${from} to ${to}`);
+    const targetSocketId = users.get(to);
+    if (targetSocketId) {
+      // Forward the offer to the target user
+      io.to(targetSocketId).emit('offer', {
+        from: from,
+        sdp: sdp
+      });
+    } else {
+      // Target user not found
+      socket.emit('user-not-found', { to });
+    }
   });
- 
-  // Forward answer
-  socket.on('answer', ({ to, sdp }) => {
-    console.log(`[Server] Answer from ${socket.id} to ${to}`);
-    io.to(to).emit('answer', { from: socket.id, sdp });
+  // Handle call answer
+  socket.on('answer', (data) => {
+    const { to, sdp } = data;
+    const from = socketToPublicKey.get(socket.id);
+    console.log(`Answer from ${from} to ${to}`);
+    const targetSocketId = users.get(to);
+    if (targetSocketId) {
+      // Forward the answer to the target user
+      io.to(targetSocketId).emit('answer', {
+        from: from,
+        sdp: sdp
+      });
+    }
   });
- 
-  // Forward ICE candidates
-  socket.on('ice-candidate', ({ to, candidate }) => {
-    console.log(`[Server] ICE candidate from ${socket.id} to ${to}`);
-    io.to(to).emit('ice-candidate', { from: socket.id, candidate });
+  // Handle ICE candidates
+  socket.on('ice-candidate', (data) => {
+    const { to, candidate } = data;
+    const from = socketToPublicKey.get(socket.id);
+    const targetSocketId = users.get(to);
+    if (targetSocketId) {
+      // Forward the ICE candidate to the target user
+      io.to(targetSocketId).emit('ice-candidate', {
+        from: from,
+        candidate: candidate
+      });
+    }
   });
- 
+  // Handle call rejection
+  socket.on('call-rejected', (data) => {
+    const { to } = data;
+    const from = socketToPublicKey.get(socket.id);
+    const targetSocketId = users.get(to);
+    if (targetSocketId) {
+      // Inform the caller that their call was rejected
+      io.to(targetSocketId).emit('call-rejected', {
+        from: from
+      });
+    }
+  });
+  // Handle call ending
+  socket.on('call-ended', (data) => {
+    const { to } = data;
+    const from = socketToPublicKey.get(socket.id);
+    const targetSocketId = users.get(to);
+    if (targetSocketId) {
+      // Inform the other participant that the call has ended
+      io.to(targetSocketId).emit('call-ended', {
+        from: from
+      });
+    }
+  });
+  // Handle disconnection
   socket.on('disconnect', () => {
-    console.log(`[Server] Disconnected: ${socket.id}`);
-    delete users[socket.id];
-  });
- 
-  // Add to your existing server.js socket handlers
-  socket.on('call-rejected', ({ to }) => {
-    console.log(`[Server] Call rejected from ${socket.id} to ${to}`);
-    io.to(to).emit('call-rejected', { from: socket.id });
-  });
- 
-  socket.on('call-ended', ({ to }) => {
-    console.log(`[Server] Call ended by ${socket.id} to ${to}`);
-    io.to(to).emit('call-ended', { from: socket.id });
-  });
- 
-  socket.on('request-offer', ({ from }) => {
-    console.log(`[Server] Offer requested by ${socket.id} from ${from}`);
-    io.to(from).emit('request-offer', { from: socket.id });
+    const publicKey = socketToPublicKey.get(socket.id);
+    console.log(`Client disconnected: ${socket.id}, public key: ${publicKey}`);
+    if (publicKey) {
+      // Remove user from mappings
+      users.delete(publicKey);
+      socketToPublicKey.delete(socket.id);
+    }
   });
 });
  
-server.listen(3000, () => {
-  console.log('[Server] Listening on http://localhost:3000');
+// Serve a simple status page
+app.get('/', (req, res) => {
+  res.send('WebRTC Signaling Server is running');
 });
  
- 
+// Start server
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+});

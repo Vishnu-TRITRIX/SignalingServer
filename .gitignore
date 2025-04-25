@@ -1,16 +1,21 @@
-# Dependencies
+# Node modules
 node_modules/
 
 # Logs
-logs/
+logs
 *.log
+npm-debug.log*
 
-# Environment variables
+# Runtime data
+pids
+*.pid
+*.seed
+
+# Optional npm cache directory
+.npm
+
+# dotenv environment files
 .env
 
-# OS generated files
-.DS_Store
-
-# Build directories
-dist/
-build/
+# VS Code settings
+.vscode/
